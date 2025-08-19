@@ -1,8 +1,10 @@
 use proc_macro::TokenStream;
 use quote::{format_ident, quote};
-use syn::{parse_quote, Data, DeriveInput, Expr, Fields, Ident, Lifetime, Type, Variant};
+use syn::{Data, DeriveInput, Expr, Fields, Ident, Type, Variant, parse_quote};
 
-fn calculate_variants_with_discriminants<'a>(variants: &[&'a Variant]) -> Vec<(Expr, &'a Variant)> {
+fn calculate_variants_with_discriminants<'a>(
+    variants: impl IntoIterator<Item = &'a Variant>,
+) -> Vec<(Expr, &'a Variant)> {
     let mut variants_with_discriminants: Vec<(Expr, &Variant)> = Vec::new();
     let mut next_discriminant: Expr = parse_quote! { 0 };
     for v in variants {
@@ -28,10 +30,15 @@ pub fn derive_xdr_enum_serialize(input: TokenStream) -> TokenStream {
     let name = &ast.ident;
     let variants = match &ast.data {
         Data::Enum(data) => data.variants.iter().collect::<Vec<&Variant>>(),
-        _ => panic!("Only enums are supported"),
+        _ => {
+            let error_span = ast.ident.span();
+            return syn::Error::new(error_span, "XDREnum can only be derived for enums")
+                .to_compile_error()
+                .into();
+        }
     };
 
-    let variants_with_discriminants = calculate_variants_with_discriminants(&variants);
+    let variants_with_discriminants = calculate_variants_with_discriminants(variants);
 
     let match_arms = variants_with_discriminants
         .iter()
@@ -75,27 +82,10 @@ pub fn derive_xdr_enum_serialize(input: TokenStream) -> TokenStream {
                             |f| f.ident.as_ref(), // all fields are named, so we can safely use filter_map here
                         )
                         .collect::<Vec<&Ident>>();
-                    let field_types = fields.named.iter().map(|f| &f.ty);
-
-                    let helper_struct_name = format_ident!("__{}_{}Payload", name, variant_ident);
-                    let lifetime = Lifetime::new("'a", proc_macro2::Span::call_site());
-                    // TODO: can we remove lifetime parameter?
-
                     quote! {
-                        Self::#variant_ident { #(#field_names,)* } => {
-                            #[allow(non_camel_case_types)]
-                            #[doc(hidden)]
-                            #[derive(::serde::Serialize)]
-                            struct #helper_struct_name<#lifetime> {
-                                #( pub #field_names: &'a #field_types, )*
-                            }
-
-                            let payload = #helper_struct_name {
-                                #(#field_names,)*
-                            };
-
+                        Self::#variant_ident { #(#field_names),* } => {
                             #base_serialization
-                            ::serde::ser::SerializeTuple::serialize_element(&mut ser, &payload)?;
+                            ::serde::ser::SerializeTuple::serialize_element(&mut ser, &(#(#field_names),*))?;
                             ::serde::ser::SerializeTuple::end(ser)
                         }
                     }
@@ -128,7 +118,7 @@ pub fn derive_xdr_enum_deserialize(input: TokenStream) -> TokenStream {
     };
 
     let variants_with_discriminants: Vec<(Expr, &Variant)> =
-        calculate_variants_with_discriminants(&variants);
+        calculate_variants_with_discriminants(variants.iter().copied());
     let variants_ident = variants
         .iter()
         .map(|variant| &variant.ident)
@@ -138,86 +128,55 @@ pub fn derive_xdr_enum_deserialize(input: TokenStream) -> TokenStream {
         .map(|ident| ident.to_string())
         .collect();
 
-    let deserialization_branches = variants_with_discriminants.iter().map(|(discriminant, variant)| {
-            let variant_ident = &variant.ident;
-            let variant_body = match &variant.fields {
-                Fields::Unit => {
-                    quote! {
-                        ::serde::de::VariantAccess::unit_variant(v)?;
-                        Ok(#name::#variant_ident)
-                    }
-                }
-                Fields::Unnamed(fields) => {
-                    let fields_len = fields.unnamed.len();
-                    let field_vars: Vec<Ident> = (0..fields_len)
-                        .map(|i| format_ident!("field_{}", i))
-                        .collect();
-                    quote! {
-                        #[doc(hidden)]
-                        struct __TupleVisitor;
-                        impl<'de> ::serde::de::Visitor<'de> for __TupleVisitor {
-                            type Value = #name;
-
-                            fn expecting(&self, formatter: &mut ::std::fmt::Formatter) -> ::std::fmt::Result {
-                                formatter.write_str(concat!("a tuple variant ", stringify!(#name::#variant_ident)))
-                            }
-
-                            fn visit_seq<A>(self, mut data: A) -> Result<Self::Value, A::Error>
-                            where
-                                A: ::serde::de::SeqAccess<'de>,
-                            {
-                                #(
-                                    let #field_vars = data.next_element()?.ok_or_else(|| ::serde::de::Error::custom(concat!("missing field ", stringify!(#field_vars))))?;
-                                )*
-                                Ok(#name::#variant_ident(#(#field_vars),*))
-                            }
+    let deserialization_branches =
+        variants_with_discriminants
+            .iter()
+            .map(|(discriminant, variant)| {
+                let variant_ident = &variant.ident;
+                let variant_body = match &variant.fields {
+                    Fields::Unit => {
+                        quote! {
+                            let _ = data.next_element::<()>()?
+                                    .ok_or_else(|| ::serde::de::Error::invalid_length(1, &self))?;
+                            Ok(#name::#variant_ident)
                         }
-                        ::serde::de::VariantAccess::tuple_variant(v, #fields_len, __TupleVisitor{})
                     }
-                }
-                Fields::Named(fields) => {
-                    let field_names: Vec<&Ident> = fields
-                        .named
-                        .iter()
-                        .map(|f| f.ident.as_ref().unwrap())
-                        .collect();
-                    let field_types: Vec<&Type> = fields
-                        .named
-                        .iter()
-                        .map(|f| &f.ty)
-                        .collect();
-                    let field_names_str: Vec<String> = field_names.iter().map(|f| f.to_string()).collect();
-                    
-                    
-                    quote!{
-                        #[doc(hidden)]
-                        struct __StructVisitor{};
-                        impl<'de> ::serde::de::Visitor<'de> for __StructVisitor {
-                            type Value = #name;
-                            
-                            fn expecting(&self, formatter: &mut ::std::fmt::Formatter) -> ::std::fmt::Result {
-                                formatter.write_str(concat!("a tuple variant ", stringify!(#name::#variant_ident)))
-                            }
-                            
-                            fn visit_seq<V>(self, mut data: V) -> Result<Self::Value, V::Error>
-                            where
-                                V: ::serde::de::SeqAccess<'de>,
-                            {
-                                #( let #field_names = data.next_element::<#field_types>()?.ok_or_else(|| ::serde::de::Error::custom(concat!("missing field ", stringify!(#field_names))))?; )* 
-                                Ok(#name::#variant_ident{#(#field_names),*})
-                            }
+                    Fields::Unnamed(fields) => {
+                        let field_types = fields.unnamed.iter().map(|f| &f.ty);
+                        let indices = 0..fields.unnamed.len();
+                        quote! {
+                                let fields = data.next_element::<(#( #field_types, )*)>()?
+                                    .ok_or_else(|| ::serde::de::Error::invalid_length(1, &self))?;
+                                Ok(#name::#variant_ident( #( fields.#indices, )* ))
                         }
-                        ::serde::de::VariantAccess::struct_variant(v, &[#(#field_names_str),*], __StructVisitor{})
+                    }
+                    Fields::Named(fields) => {
+                        let field_names: Vec<&Ident> = fields
+                            .named
+                            .iter()
+                            .filter_map(|f| f.ident.as_ref()) // filter_map is ok here, since we know that this is Named branch
+                            .collect();
+                        let field_types: Vec<&Type> = fields.named.iter().map(|f| &f.ty).collect();
+
+                        let indices = 0..field_names.len();
+
+                        quote! {
+                                let fields = data.next_element::<(#( #field_types, )*)>()?
+                                    .ok_or_else(|| ::serde::de::Error::invalid_length(1, &self))?;
+
+                                Ok(#name::#variant_ident {
+                                    #( #field_names: fields.#indices, )*
+                                })
+                        }
+                    }
+                };
+
+                quote! {
+                    if discriminant == (#discriminant) as u32 {
+                        return {#variant_body};
                     }
                 }
-            };
-
-            quote! {
-                if discriminant == (#discriminant) as u32 {
-                    return {#variant_body};
-                }
-            }
-        });
+            });
 
     let visitor_struct_defs = quote! {
         #[doc(hidden)]
@@ -229,13 +188,18 @@ pub fn derive_xdr_enum_deserialize(input: TokenStream) -> TokenStream {
                 formatter.write_str(concat!("a enum ", stringify!(#name)))
             }
 
-            fn visit_enum<A>(self, data: A) -> Result<Self::Value, A::Error>
+            fn visit_seq<A>(self, mut data: A) -> Result<Self::Value, A::Error>
             where
-                A: ::serde::de::EnumAccess<'de>,
+                A: ::serde::de::SeqAccess<'de>,
             {
-                let (discriminant, v): (u32, <A as ::serde::de::EnumAccess<'de>>::Variant) = data.variant()?;
+                let discriminant: u32 = data.next_element()?
+                                            .ok_or_else(|| ::serde::de::Error::invalid_length(0, &self))?;
+
                 #(#deserialization_branches)*
-                Err(::serde::de::Error::custom(format!("unknown variant discriminant {}", discriminant)))
+                Err(::serde::de::Error::custom(format!(
+                    "unknown discriminant {} for enum {}",
+                    discriminant, stringify!(#name)
+                )))
             }
         }
     };
@@ -246,7 +210,7 @@ pub fn derive_xdr_enum_deserialize(input: TokenStream) -> TokenStream {
             where
                 D: ::serde::Deserializer<'de>,
             {
-                deserializer.deserialize_enum(stringify!(#name), &[#(#variants_str),*], __Visitor{})
+                deserializer.deserialize_tuple(2, __Visitor{})
             }
         }
     };
