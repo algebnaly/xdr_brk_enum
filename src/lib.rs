@@ -94,16 +94,18 @@ pub fn derive_xdr_enum_serialize(input: TokenStream) -> TokenStream {
         });
 
     let expanded = quote! {
-        impl ::serde::Serialize for #name{
-            fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
-            where
-                S: ::serde::Serializer,
-            {
-                match self {
-                    #(#match_arms,)*
+        const _: () = {
+            impl ::serde::Serialize for #name{
+                fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
+                where
+                    S: ::serde::Serializer,
+                {
+                    match self {
+                        #(#match_arms,)*
+                    }
                 }
             }
-        }
+        };
     };
     expanded.into()
 }
@@ -179,7 +181,6 @@ pub fn derive_xdr_enum_deserialize(input: TokenStream) -> TokenStream {
             });
 
     let visitor_struct_defs = quote! {
-        #[doc(hidden)]
         struct __Visitor{}
         impl<'de> ::serde::de::Visitor<'de> for __Visitor {
             type Value = #name;
@@ -203,16 +204,19 @@ pub fn derive_xdr_enum_deserialize(input: TokenStream) -> TokenStream {
             }
         }
     };
+    
     let expanded = quote! {
-        #visitor_struct_defs
-        impl<'de> ::serde::Deserialize<'de> for #name {
-            fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
-            where
-                D: ::serde::Deserializer<'de>,
-            {
-                deserializer.deserialize_tuple(2, __Visitor{})
+        const _: () = {
+            #visitor_struct_defs
+            impl<'de> ::serde::Deserialize<'de> for #name {
+                fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+                where
+                    D: ::serde::Deserializer<'de>,
+                {
+                    deserializer.deserialize_tuple(2, __Visitor{})
+                }
             }
-        }
+        };
     };
     expanded.into()
 }
