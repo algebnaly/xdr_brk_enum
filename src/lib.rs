@@ -116,19 +116,16 @@ pub fn derive_xdr_enum_deserialize(input: TokenStream) -> TokenStream {
     let name = &ast.ident;
     let variants = match &ast.data {
         Data::Enum(data) => data.variants.iter().collect::<Vec<&Variant>>(),
-        _ => panic!("Only enums are supported"),
+        _ => {
+            let error_span = ast.ident.span();
+            return syn::Error::new(error_span, "XDREnum can only be derived for enums")
+                .to_compile_error()
+                .into();
+        }
     };
 
     let variants_with_discriminants: Vec<(Expr, &Variant)> =
         calculate_variants_with_discriminants(variants.iter().copied());
-    let variants_ident = variants
-        .iter()
-        .map(|variant| &variant.ident)
-        .collect::<Vec<&Ident>>();
-    let variants_str: Vec<String> = variants_ident
-        .iter()
-        .map(|ident| ident.to_string())
-        .collect();
 
     let deserialization_branches =
         variants_with_discriminants
@@ -204,7 +201,7 @@ pub fn derive_xdr_enum_deserialize(input: TokenStream) -> TokenStream {
             }
         }
     };
-    
+
     let expanded = quote! {
         const _: () = {
             #visitor_struct_defs
