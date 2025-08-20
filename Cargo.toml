@@ -2,6 +2,7 @@
 name = "xdr_brk_enum"
 version = "0.1.0"
 edition = "2024"
+authors = ["algebnaly <algebnaly@algebnaly.com>"]
 license = "MIT"
 description = "A proc-macro crate that provides a derive macro for serde::Serialize and serde::Deserialize on Rust enum types, to support XDR (External Data Representation) serialization and deserialization."
 keywords = ["proc-macro", "xdr", "serialization", "deserialization", "binary"]
