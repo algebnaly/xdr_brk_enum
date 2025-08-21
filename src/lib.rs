@@ -1,6 +1,6 @@
 use proc_macro::TokenStream;
 use quote::{format_ident, quote};
-use syn::{Data, DeriveInput, Expr, Fields, Ident, Type, Variant, parse_quote};
+use syn::{Data, DeriveInput, Expr, Fields, Ident, Index, Type, Variant, parse_quote};
 
 fn calculate_variants_with_discriminants<'a>(
     variants: impl IntoIterator<Item = &'a Variant>,
@@ -142,7 +142,7 @@ pub fn derive_xdr_enum_deserialize(input: TokenStream) -> TokenStream {
                     }
                     Fields::Unnamed(fields) => {
                         let field_types = fields.unnamed.iter().map(|f| &f.ty);
-                        let indices = 0..fields.unnamed.len();
+                        let indices = (0..fields.unnamed.len()).map(|i| Index::from(i));
                         quote! {
                                 let fields = data.next_element::<(#( #field_types, )*)>()?
                                     .ok_or_else(|| ::serde::de::Error::invalid_length(1, &self))?;
@@ -157,7 +157,7 @@ pub fn derive_xdr_enum_deserialize(input: TokenStream) -> TokenStream {
                             .collect();
                         let field_types: Vec<&Type> = fields.named.iter().map(|f| &f.ty).collect();
 
-                        let indices = 0..field_names.len();
+                        let indices = (0..field_names.len()).map(|i|Index::from(i));
 
                         quote! {
                                 let fields = data.next_element::<(#( #field_types, )*)>()?
